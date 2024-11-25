@@ -1,0 +1,169 @@
+#version: "3.8"
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis (Celery Broker)
+  redis:
+    image: redis:7.2-bookworm
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Airflow Initialization Service
+  airflow-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__PYTHONPATH: /opt/airflow/scripts
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__LOGGING__LOGGING_LEVEL: "INFO"
+    command: >
+      bash -c "/usr/local/bin/wait-for-it.sh postgres:5432 -- airflow db init"
+    volumes:
+      - ./scripts:/opt/airflow/scripts
+      - ./dags:/opt/airflow/dags
+      - ./plugins:/opt/airflow/plugins
+      - airflow-logs:/opt/airflow/logs
+
+  # Airflow Webserver
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: airflow-webserver
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__PYTHONPATH: /opt/airflow/scripts
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__LOGGING__LOGGING_LEVEL: "INFO"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+      - airflow-logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./result:/opt/airflow/datasets
+    command: >
+      bash -c "/usr/local/bin/wait-for-it.sh postgres:5432 -- /usr/local/bin/wait-for-it.sh redis:6379 -- airflow webserver"
+
+  # Airflow Scheduler
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: airflow-scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__PYTHONPATH: /opt/airflow/scripts
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__LOGGING__LOGGING_LEVEL: "INFO"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+      - airflow-logs:/opt/airflow/logs
+    command: >
+      bash -c "/usr/local/bin/wait-for-it.sh postgres:5432 -- /usr/local/bin/wait-for-it.sh redis:6379 -- airflow scheduler"
+
+  # Airflow Worker
+  airflow-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: airflow-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__PYTHONPATH: /opt/airflow/scripts
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__LOGGING__LOGGING_LEVEL: "INFO"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+      - airflow-logs:/opt/airflow/logs
+#      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - ./result:/opt/airflow/datasets
+    command: >
+      bash -c "/usr/local/bin/wait-for-it.sh postgres:5432 -- /usr/local/bin/wait-for-it.sh redis:6379 -- airflow celery worker"
+
+  # Airflow Triggerer
+  airflow-triggerer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: airflow-triggerer
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__PYTHONPATH: /opt/airflow/scripts
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__LOGGING__LOGGING_LEVEL: "INFO"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./plugins:/opt/airflow/plugins
+      - airflow-logs:/opt/airflow/logs
+      - ./scripts:/opt/airflow/scripts
+    command: >
+      bash -c "/usr/local/bin/wait-for-it.sh postgres:5432 -- /usr/local/bin/wait-for-it.sh redis:6379 -- airflow celery triggerer"
+
+volumes:
+  postgres-data:
+  airflow-logs:
